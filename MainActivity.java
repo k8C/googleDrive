@@ -18,14 +18,18 @@ import android.widget.TextView;
 import android.widget.TimePicker;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.List;
 
 import javax.net.ssl.HttpsURLConnection;
 
@@ -89,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
         String s = String.format("%1$tY/%<tm/%<td %<tR", startTime);
         fromText.setText(s);
         toText.setText(s);
+        //DataProcessingTask.ac = getApplicationContext();
         //statusText.setTag(PreferenceManager.getDefaultSharedPreferences(this).getString("token", null));
     }
 
@@ -100,19 +105,37 @@ public class MainActivity extends AppCompatActivity {
         }
 //        HttpsURLConnection u;
 //        u.getInputStream().;
-        new DataProcessingTask(statusText).execute(startTime.clone(), endTime.clone());
+        new DataProcessingTask(statusText, getApplicationContext()).execute(startTime.clone(), endTime.clone());
     }
 
     static class DataProcessingTask extends AsyncTask<Object, Integer, String> {
         //String token;
+        Context appContext;
         WeakReference<TextView> statusTextReference;
+        byte[] tokenRequestBody;
 
-        public DataProcessingTask(TextView statusText) {
+        public DataProcessingTask(TextView statusText, Context applicationContext) {
             statusTextReference = new WeakReference<TextView>(statusText);
+            appContext = applicationContext;
         }
 
-        /*void refreshToken() {
-        }*/
+        void refreshToken(HttpsURLConnection connection, InputStream stream) throws IOException {
+            int c;
+            if (tokenRequestBody == null)
+                tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
+            connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(tokenRequestBody.length);
+            connection.getOutputStream().write(tokenRequestBody);
+            if (connection.getResponseCode() == 200) {
+                stream = connection.getInputStream();
+                while ((c = stream.read()) != -1) {
+                    if(c == 107 && stream.read() == 101 && stream.read() == 110 && stream.read() == 34 && stream.read() == 58) {
+
+                    }
+                }
+            }
+        }
 
         @Override
         protected String doInBackground(Object... params) {
@@ -132,38 +155,61 @@ public class MainActivity extends AppCompatActivity {
 
             InputStream stream;
             HttpsURLConnection connection;
-            StringBuilder s= new StringBuilder();;
+            StringBuilder s;
             int b, c;
-            String id = null, name = null;
+            String token = "ya29.GlzdBt4A6YxX_ObA5I0DyISNLHGJo_Utr1NzziKh0Kp8QUdpoC2An9q8n600dI6h3TEsYyaUm-pTPh9lBJdsS69BF9oVu_UkeBUZKsRhcu7C5YEzPnGeSKbkASTiPA";
+            ByteArrayOutputStream baos;
+            byte[] buffer = new byte[1024];
+            List<String> ids = new ArrayList<String>();
+            List<String> names = new ArrayList<String>();
+            boolean isId = true;
             try {
                 connection = (HttpsURLConnection) new URL(searchUrl.toString()).openConnection();
-                connection.addRequestProperty("Authorization", "Bearer ya29.GlzcBnqrpvoTAaqPWpnn02uUKLa1LhKj7vVeCV-alcDttAmvJhs02DZ2twXQDrpY-oZtpwBErp50jMCT8K_ZvNTdFKUST5IBjkNDh0evDaqztGe8KZQDuPDQaD35rA");;
+                connection.addRequestProperty("Authorization", "Bearer " + token);
                 if (connection.getResponseCode() == 200) {
                     stream = connection.getInputStream();
                     while ((c = stream.read()) != -1) {
-                    if ((c == 100 || c == 101) && stream.read() == 34 && stream.read() == 58) {
-                        stream.read();
-                        stream.read();
-                        s = new StringBuilder();
-                        while ((b = stream.read()) != 34) {
-                            s.append((char) b);
-                        }
-                        if (c == 100) {
-                            id = s.toString();
-                        } else {
-                            name = s.toString();
-                            Log.e(TAG, name + ": " + id);
+                        if (c == 58 && stream.read() == 32 && stream.read() == 34) {
+                            s = new StringBuilder();
+                            while ((b = stream.read()) != 34) {
+                                s.append((char) b);
+                            }
+                            if (isId) {
+                                isId = false;
+                                ids.add(s.toString());
+                            } else {
+                                isId = true;
+                                names.add(s.toString());
+                            }
                         }
                     }
+                    stream.close();
+                    //Log.e(TAG, i +" files");
+                    for (i = 0; i < ids.size(); i++) {
+                        Log.e(TAG, names.get(i) + ": " + ids.get(i));
+                        connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
+                        connection.addRequestProperty("Authorization", "Bearer " + token);
+                        if (connection.getResponseCode() == 200) {
+                            stream = connection.getInputStream();
+                            baos = new ByteArrayOutputStream();
+                            while ((c = stream.read(buffer)) != -1) {
+                                baos.write(buffer, 0, c);
+                            }
+                            Log.e(TAG, baos.toString());
+                            stream.close();
+                        }
+
                     }
                 } else {
                     stream = connection.getErrorStream();
+                    s = new StringBuilder();
                     while ((c = stream.read()) != -1) {
                         s.append((char) c);
                     }
                     Log.e(TAG, "error stream: " + s.toString());
+                    stream.close();
                 }
-                stream.close();
+
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -185,6 +231,7 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         protected void onPostExecute(String s) {
+            //PreferenceManager.getDefaultSharedPreferences(ac).edit().apply();
             TextView statusText = statusTextReference.get();
             if (statusText != null) {
                 Log.e(TAG, s);
