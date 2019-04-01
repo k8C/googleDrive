@@ -108,31 +108,51 @@ public class MainActivity extends AppCompatActivity {
         new DataProcessingTask(statusText, getApplicationContext()).execute(startTime.clone(), endTime.clone());
     }
 
-    static class DataProcessingTask extends AsyncTask<Object, Integer, String> {
+    static class DataProcessingTask extends AsyncTask<Object, String, String> {
         //String token;
         Context appContext;
         WeakReference<TextView> statusTextReference;
         byte[] tokenRequestBody;
+        String appDirectory;
+        List<String> incompleteFiles;
 
         public DataProcessingTask(TextView statusText, Context applicationContext) {
             statusTextReference = new WeakReference<TextView>(statusText);
             appContext = applicationContext;
+            appDirectory = appContext.getExternalFilesDir(null).getPath();
         }
 
-        void refreshToken(HttpsURLConnection connection, InputStream stream) throws IOException {
+        String getToken(HttpsURLConnection connection, InputStream stream) {
             int c;
+            StringBuilder s;
             if (tokenRequestBody == null)
                 tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
-            connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
-            connection.setDoOutput(true);
-            connection.setFixedLengthStreamingMode(tokenRequestBody.length);
-            connection.getOutputStream().write(tokenRequestBody);
-            if (connection.getResponseCode() == 200) {
-                stream = connection.getInputStream();
-                while ((c = stream.read()) != -1) {
-                    if(c == 107 && stream.read() == 101 && stream.read() == 110 && stream.read() == 34 && stream.read() == 58) {
-
+            for (; ; ) {
+                try {
+                    connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
+                    connection.setDoOutput(true);
+                    connection.setFixedLengthStreamingMode(tokenRequestBody.length);
+                    connection.getOutputStream().write(tokenRequestBody);
+                    s = new StringBuilder();
+                    if (connection.getResponseCode() == 200) {
+                        stream = connection.getInputStream();
+                        while ((c = stream.read()) != -1) {
+                            if (c == 107 && stream.read() == 101 && stream.read() == 110 && stream.read() == 34 && stream.read() == 58) {
+                                while ((c = stream.read()) != 34) {
+                                    s.append((char) c);
+                                }
+                                break;
+                            }
+                        }
+                        stream.close();
+                    } else {
+                        Log.e(TAG, "refreshToken fail");
+                        cancel(true);
                     }
+                    return s.toString();
+                } catch (IOException e) {
+                    Log.e(TAG, "refreshToken exception");
+                    e.printStackTrace();
                 }
             }
         }
@@ -142,20 +162,26 @@ public class MainActivity extends AppCompatActivity {
             StringBuilder searchUrl = new StringBuilder("https://www.googleapis.com/drive/v3/files?fields=files(id,name)&q=");
             Calendar startTime = (Calendar) params[0];
             int i = 0;
+            String name;//, lastIncompleteFileName = incompleteFiles.get(incompleteFiles.size()-1);
+
             while (!startTime.after(params[1])) {
-                if (i++ == 0) {
-                    searchUrl.append("name%3D%27");
+                name = String.format("%1$tY%<tm%<td%<tH%<tM", startTime);
+                if (!new File(appDirectory, name).exists() || incompleteFiles.contains(name)) {
+                    if (i++ == 0) {
+                        searchUrl.append("name%3D%27");
+                    } else {
+                        searchUrl.append("%27orname%3D%27");
+                    }
+                    searchUrl.append(name);
                 } else {
-                    searchUrl.append("%27orname%3D%27");
+                    publishProgress(name);
                 }
-                searchUrl.append(String.format("%1$tY%<tm%<td%<tH%<tM", startTime));
                 startTime.add(Calendar.MINUTE, 1);
             }
             searchUrl.append("%27");
 
             InputStream stream;
             HttpsURLConnection connection;
-            StringBuilder s;
             int b, c;
             String token = "ya29.GlzdBt4A6YxX_ObA5I0DyISNLHGJo_Utr1NzziKh0Kp8QUdpoC2An9q8n600dI6h3TEsYyaUm-pTPh9lBJdsS69BF9oVu_UkeBUZKsRhcu7C5YEzPnGeSKbkASTiPA";
             ByteArrayOutputStream baos;
@@ -166,13 +192,14 @@ public class MainActivity extends AppCompatActivity {
             try {
                 connection = (HttpsURLConnection) new URL(searchUrl.toString()).openConnection();
                 connection.addRequestProperty("Authorization", "Bearer " + token);
+                StringBuilder s;
                 if (connection.getResponseCode() == 200) {
                     stream = connection.getInputStream();
                     while ((c = stream.read()) != -1) {
                         if (c == 58 && stream.read() == 32 && stream.read() == 34) {
                             s = new StringBuilder();
-                            while ((b = stream.read()) != 34) {
-                                s.append((char) b);
+                            while ((c = stream.read()) != 34) {
+                                s.append((char) c);
                             }
                             if (isId) {
                                 isId = false;
@@ -197,6 +224,8 @@ public class MainActivity extends AppCompatActivity {
                             }
                             Log.e(TAG, baos.toString());
                             stream.close();
+                        } else {
+                            token = getToken(connection, stream);
                         }
 
                     }
@@ -208,6 +237,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                     Log.e(TAG, "error stream: " + s.toString());
                     stream.close();
+
                 }
 
             } catch (IOException e) {
@@ -220,13 +250,12 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @Override
-        protected void onProgressUpdate(Integer... values) {
-            TextView statusText = statusTextReference.get();
-
+        protected void onProgressUpdate(String... values) {
+            /*TextView statusText = statusTextReference.get();
             if (statusText != null) {
-                //statusText.setTag(token);
-                //PreferenceManager.getDefaultSharedPreferences(statusText.getContext()).edit().putString("token", token).apply();
-            }
+                //statusText.setTag(token);//PreferenceManager.getDefaultSharedPreferences(statusText.getContext()).edit().putString("token", token).apply();
+            }*/
+            Log.e(TAG, values[0] + " exists");
         }
 
         @Override
