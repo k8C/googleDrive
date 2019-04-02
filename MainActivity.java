@@ -10,6 +10,7 @@ import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.View;
@@ -112,7 +113,6 @@ public class MainActivity extends AppCompatActivity {
         //String token;
         Context appContext;
         WeakReference<TextView> statusTextReference;
-        byte[] tokenRequestBody;
         String appDirectory;
         List<String> incompleteFiles;
 
@@ -125,8 +125,7 @@ public class MainActivity extends AppCompatActivity {
         String getToken(HttpsURLConnection connection, InputStream stream) {
             int c;
             StringBuilder s;
-            if (tokenRequestBody == null)
-                tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
+            byte[] tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
             for (; ; ) {
                 try {
                     connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
@@ -145,6 +144,7 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                         stream.close();
+                        Log.e(TAG, "new token: " + s.toString());
                     } else {
                         Log.e(TAG, "refreshToken fail");
                         cancel(true);
@@ -153,6 +153,7 @@ public class MainActivity extends AppCompatActivity {
                 } catch (IOException e) {
                     Log.e(TAG, "refreshToken exception");
                     e.printStackTrace();
+                    SystemClock.sleep(5000);
                 }
             }
         }
@@ -174,7 +175,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                     searchUrl.append(name);
                 } else {
-                    publishProgress(name);
+                    publishProgress(name, null);
                 }
                 startTime.add(Calendar.MINUTE, 1);
             }
@@ -188,7 +189,7 @@ public class MainActivity extends AppCompatActivity {
             byte[] buffer = new byte[1024];
             List<String> ids = new ArrayList<String>();
             List<String> names = new ArrayList<String>();
-            boolean isId = true;
+            boolean isId = true, hasException = true;
             try {
                 connection = (HttpsURLConnection) new URL(searchUrl.toString()).openConnection();
                 connection.addRequestProperty("Authorization", "Bearer " + token);
@@ -211,21 +212,33 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                     stream.close();
+                    publishProgress(null, "Downloading " + ids.size() + " files");
                     //Log.e(TAG, i +" files");
                     for (i = 0; i < ids.size(); i++) {
                         Log.e(TAG, names.get(i) + ": " + ids.get(i));
-                        connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
-                        connection.addRequestProperty("Authorization", "Bearer " + token);
-                        if (connection.getResponseCode() == 200) {
-                            stream = connection.getInputStream();
-                            baos = new ByteArrayOutputStream();
-                            while ((c = stream.read(buffer)) != -1) {
-                                baos.write(buffer, 0, c);
+                        hasException = true;
+                        while (hasException) {
+                            try {
+                                connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
+                                connection.addRequestProperty("Authorization", "Bearer " + token);
+                                if (connection.getResponseCode() == 200) {
+                                    stream = connection.getInputStream();
+                                    baos = new ByteArrayOutputStream();
+                                    while ((c = stream.read(buffer)) != -1) {
+                                        baos.write(buffer, 0, c);
+                                    }
+                                    Log.e(TAG, baos.toString());
+                                    baos.close();
+                                    stream.close();
+                                } else {
+                                    token = getToken(connection, stream);
+                                }
+                                hasException = false;
+                            } catch (IOException e) {
+                                Log.e(TAG, "download file " + names.get(i) + " exception");
+                                e.printStackTrace();
+                                SystemClock.sleep(5000);
                             }
-                            Log.e(TAG, baos.toString());
-                            stream.close();
-                        } else {
-                            token = getToken(connection, stream);
                         }
 
                     }
@@ -237,11 +250,13 @@ public class MainActivity extends AppCompatActivity {
                     }
                     Log.e(TAG, "error stream: " + s.toString());
                     stream.close();
-
+                    token = getToken(connection, stream);
                 }
 
-            } catch (IOException e) {
+            } catch (ArithmeticException e) {
+                Log.e(TAG, "searching files exception");
                 e.printStackTrace();
+                SystemClock.sleep(5000);
             }
 
             //if (isCancelled()) return "";
@@ -255,7 +270,11 @@ public class MainActivity extends AppCompatActivity {
             if (statusText != null) {
                 //statusText.setTag(token);//PreferenceManager.getDefaultSharedPreferences(statusText.getContext()).edit().putString("token", token).apply();
             }*/
-            Log.e(TAG, values[0] + " exists");
+            if (values[0] == null) {
+                Log.e(TAG, "task status: " + values[1]);
+            } else {
+                Log.e(TAG, "file " + values[0] + " exists");
+            }
         }
 
         @Override
