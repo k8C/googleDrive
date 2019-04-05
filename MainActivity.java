@@ -18,6 +18,9 @@ import android.widget.DatePicker;
 import android.widget.TextView;
 import android.widget.TimePicker;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -110,26 +113,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     static class DataProcessingTask extends AsyncTask<Object, String, String> {
-        //String token;
+        String token;
         Context appContext;
         WeakReference<TextView> statusTextReference;
-        String appDirectory;
-        List<String> incompleteFiles;
 
         public DataProcessingTask(TextView statusText, Context applicationContext) {
             statusTextReference = new WeakReference<TextView>(statusText);
             appContext = applicationContext;
-            appDirectory = appContext.getExternalFilesDir(null).getPath();
+            token = (String) statusText.getTag();
         }
 
-        String getToken(HttpsURLConnection connection, InputStream stream) {
+        void getToken(HttpsURLConnection connection, InputStream stream) {
+            publishProgress(null, "getting token");
             int c;
             StringBuilder s;
-            byte[] tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
+            byte[] tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
             for (; ; ) {
                 try {
                     connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
                     connection.setDoOutput(true);
+                    connection.addRequestProperty("Content-Type", "application/x-www-form-urlencoded");
                     connection.setFixedLengthStreamingMode(tokenRequestBody.length);
                     connection.getOutputStream().write(tokenRequestBody);
                     s = new StringBuilder();
@@ -144,15 +147,19 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                         stream.close();
-                        Log.e(TAG, "new token: " + s.toString());
+                        token = s.toString();
+                        Log.e(TAG, "new token: " + token);
+                        publishProgress(null, "token refreshed");
                     } else {
                         Log.e(TAG, "refreshToken fail");
+                        publishProgress(null, "refreshToken failed, exit");
                         cancel(true);
                     }
-                    return s.toString();
+                    return;
                 } catch (IOException e) {
                     Log.e(TAG, "refreshToken exception");
                     e.printStackTrace();
+                    publishProgress(null, "refreshToken error, retrying");
                     SystemClock.sleep(5000);
                 }
             }
@@ -160,120 +167,137 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         protected String doInBackground(Object... params) {
-            StringBuilder searchUrl = new StringBuilder("https://www.googleapis.com/drive/v3/files?fields=files(id,name)&q=");
+            if (token == null) getToken(null, null);
+            StringBuilder s = new StringBuilder("https://www.googleapis.com/drive/v3/files?fields=files(id,name)&q=");
             Calendar startTime = (Calendar) params[0];
             int i = 0;
             String name;//, lastIncompleteFileName = incompleteFiles.get(incompleteFiles.size()-1);
-
+            String appDirectory = appContext.getExternalFilesDir(null).getPath();
+            List<String> incompleteFiles;
+            String incompleteFilesJson = PreferenceManager.getDefaultSharedPreferences(appContext).getString("incompleteFiles", null);
+            if (incompleteFilesJson != null) {
+                incompleteFiles = new Gson().fromJson(incompleteFilesJson, new TypeToken<List<String>>() {
+                }.getType());
+            } else {
+                incompleteFiles = new ArrayList<>();
+            }
             while (!startTime.after(params[1])) {
                 name = String.format("%1$tY%<tm%<td%<tH%<tM", startTime);
                 if (!new File(appDirectory, name).exists() || incompleteFiles.contains(name)) {
                     if (i++ == 0) {
-                        searchUrl.append("name%3D%27");
+                        s.append("name%3D%27");
                     } else {
-                        searchUrl.append("%27orname%3D%27");
+                        s.append("%27orname%3D%27");
                     }
-                    searchUrl.append(name);
+                    s.append(name);
                 } else {
                     publishProgress(name, null);
                 }
                 startTime.add(Calendar.MINUTE, 1);
             }
-            searchUrl.append("%27");
+            if (i==0) return "all files exist";
+            s.append("%27");
 
             InputStream stream;
             HttpsURLConnection connection;
-            int b, c;
-            String token = "ya29.GlzdBt4A6YxX_ObA5I0DyISNLHGJo_Utr1NzziKh0Kp8QUdpoC2An9q8n600dI6h3TEsYyaUm-pTPh9lBJdsS69BF9oVu_UkeBUZKsRhcu7C5YEzPnGeSKbkASTiPA";
+            int c;
             ByteArrayOutputStream baos;
             byte[] buffer = new byte[1024];
-            List<String> ids = new ArrayList<String>();
-            List<String> names = new ArrayList<String>();
-            boolean isId = true, hasException = true;
-            try {
-                connection = (HttpsURLConnection) new URL(searchUrl.toString()).openConnection();
-                connection.addRequestProperty("Authorization", "Bearer " + token);
-                StringBuilder s;
-                if (connection.getResponseCode() == 200) {
-                    stream = connection.getInputStream();
-                    while ((c = stream.read()) != -1) {
-                        if (c == 58 && stream.read() == 32 && stream.read() == 34) {
-                            s = new StringBuilder();
-                            while ((c = stream.read()) != 34) {
-                                s.append((char) c);
-                            }
-                            if (isId) {
-                                isId = false;
-                                ids.add(s.toString());
-                            } else {
-                                isId = true;
-                                names.add(s.toString());
-                            }
-                        }
-                    }
-                    stream.close();
-                    publishProgress(null, "Downloading " + ids.size() + " files");
-                    //Log.e(TAG, i +" files");
-                    for (i = 0; i < ids.size(); i++) {
-                        Log.e(TAG, names.get(i) + ": " + ids.get(i));
-                        hasException = true;
-                        while (hasException) {
-                            try {
-                                connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
-                                connection.addRequestProperty("Authorization", "Bearer " + token);
-                                if (connection.getResponseCode() == 200) {
-                                    stream = connection.getInputStream();
-                                    baos = new ByteArrayOutputStream();
-                                    while ((c = stream.read(buffer)) != -1) {
-                                        baos.write(buffer, 0, c);
-                                    }
-                                    Log.e(TAG, baos.toString());
-                                    baos.close();
-                                    stream.close();
-                                } else {
-                                    token = getToken(connection, stream);
+            List<String> ids = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            boolean isId = true;
+            String searchUrl = s.toString();
+            publishProgress(null, "searching for files");
+            for (; ; ) {
+                try {
+                    connection = (HttpsURLConnection) new URL(searchUrl).openConnection();
+                    connection.addRequestProperty("Authorization", "Bearer " + token);
+                    if (connection.getResponseCode() == 200) {
+                        stream = connection.getInputStream();
+                        while ((c = stream.read()) != -1) {
+                            if (c == 58 && stream.read() == 32 && stream.read() == 34) {
+                                s = new StringBuilder();
+                                while ((c = stream.read()) != 34) {
+                                    s.append((char) c);
                                 }
-                                hasException = false;
-                            } catch (IOException e) {
-                                Log.e(TAG, "download file " + names.get(i) + " exception");
-                                e.printStackTrace();
-                                SystemClock.sleep(5000);
+                                if (isId) {
+                                    isId = false;
+                                    ids.add(s.toString());
+                                } else {
+                                    isId = true;
+                                    names.add(s.toString());
+                                }
                             }
                         }
-
+                        stream.close();
+                        if (names.size() == 0) return "found no files";
+                        publishProgress(null, "Downloading 0/" + ids.size() + " files");
+                        for (i = 0; i < ids.size(); i++) {
+                            name = names.get(i);
+                            Log.e(TAG, name + ": " + ids.get(i));
+                            for (; ; ) {
+                                try {
+                                    connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
+                                    connection.addRequestProperty("Authorization", "Bearer " + token);
+                                    if (connection.getResponseCode() == 200) {
+                                        stream = connection.getInputStream();
+                                        baos = new ByteArrayOutputStream();
+                                        while ((c = stream.read(buffer)) != -1) {
+                                            baos.write(buffer, 0, c);
+                                        }
+                                        Log.e(TAG, baos.toString());
+                                        baos.close();
+                                        stream.close();
+                                        publishProgress(null, "Downloading " + (i + 1) + "/" + ids.size() + " files");
+                                        incompleteFiles.remove(name);
+                                        if (i == 0 && (incompleteFilesJson == null || name.compareTo(incompleteFiles.get(incompleteFiles.size() - 1)) >= 0))
+                                            incompleteFiles.add(name);
+                                        break;
+                                    } else {
+                                        getToken(connection, stream);
+                                    }
+                                } catch (IOException e) {
+                                    Log.e(TAG, "download file " + names.get(i) + " exception");
+                                    e.printStackTrace();
+                                    publishProgress(null, "download file error, retrying");
+                                    SystemClock.sleep(5000);
+                                }
+                            }
+                        }
+                        PreferenceManager.getDefaultSharedPreferences(appContext).edit().putString("incompleteFiles", new Gson().toJson(incompleteFiles)).apply();
+                        break;
+                    } else {
+                        stream = connection.getErrorStream();
+                        s = new StringBuilder();
+                        while ((c = stream.read()) != -1) {
+                            s.append((char) c);
+                        }
+                        Log.e(TAG, "error stream: " + s.toString());
+                        stream.close();
+                        publishProgress(null, "searching files failed, reacquiring token");
+                        getToken(connection, stream);
                     }
-                } else {
-                    stream = connection.getErrorStream();
-                    s = new StringBuilder();
-                    while ((c = stream.read()) != -1) {
-                        s.append((char) c);
-                    }
-                    Log.e(TAG, "error stream: " + s.toString());
-                    stream.close();
-                    token = getToken(connection, stream);
+                } catch (IOException e) {
+                    Log.e(TAG, "searching files exception");
+                    publishProgress(null, "searching files error, retrying");
+                    e.printStackTrace();
+                    SystemClock.sleep(5000);
                 }
-
-            } catch (ArithmeticException e) {
-                Log.e(TAG, "searching files exception");
-                e.printStackTrace();
-                SystemClock.sleep(5000);
             }
 
             //if (isCancelled()) return "";
-            //publishProgress(9);
-            return searchUrl.toString();
+            return searchUrl;
         }
 
         @Override
         protected void onProgressUpdate(String... values) {
-            /*TextView statusText = statusTextReference.get();
-            if (statusText != null) {
-                //statusText.setTag(token);//PreferenceManager.getDefaultSharedPreferences(statusText.getContext()).edit().putString("token", token).apply();
-            }*/
-            if (values[0] == null) {
-                Log.e(TAG, "task status: " + values[1]);
-            } else {
-                Log.e(TAG, "file " + values[0] + " exists");
+            if (!isCancelled()) {
+                TextView statusText = statusTextReference.get();
+                if (values[0] == null) {
+                    statusText.setText(values[1]);
+                } else {
+                    Log.e(TAG, "file " + values[0] + " exists");
+                }
             }
         }
 
@@ -284,6 +308,7 @@ public class MainActivity extends AppCompatActivity {
             if (statusText != null) {
                 Log.e(TAG, s);
                 statusText.setText("done");
+                statusText.setTag(token);
             }
         }
 
