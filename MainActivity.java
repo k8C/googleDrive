@@ -140,6 +140,8 @@ public class MainActivity extends AppCompatActivity {
                         stream = connection.getInputStream();
                         while ((c = stream.read()) != -1) {
                             if (c == 107 && stream.read() == 101 && stream.read() == 110 && stream.read() == 34 && stream.read() == 58) {
+                                stream.read();
+                                stream.read();
                                 while ((c = stream.read()) != 34) {
                                     s.append((char) c);
                                 }
@@ -147,8 +149,8 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                         stream.close();
-                        token = s.toString();
-                        Log.e(TAG, "new token: " + token);
+                        token = "Bearer " + s.toString();
+                        Log.e(TAG, token);
                         publishProgress(null, "token refreshed");
                     } else {
                         Log.e(TAG, "refreshToken fail");
@@ -195,7 +197,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 startTime.add(Calendar.MINUTE, 1);
             }
-            if (i==0) return "all files exist";
+            if (i == 0) return "all files exist";
             s.append("%27");
 
             InputStream stream;
@@ -207,11 +209,12 @@ public class MainActivity extends AppCompatActivity {
             List<String> names = new ArrayList<>();
             boolean isId = true;
             String searchUrl = s.toString();
+
             publishProgress(null, "searching for files");
             for (; ; ) {
                 try {
                     connection = (HttpsURLConnection) new URL(searchUrl).openConnection();
-                    connection.addRequestProperty("Authorization", "Bearer " + token);
+                    connection.addRequestProperty("Authorization", token);
                     if (connection.getResponseCode() == 200) {
                         stream = connection.getInputStream();
                         while ((c = stream.read()) != -1) {
@@ -232,25 +235,29 @@ public class MainActivity extends AppCompatActivity {
                         stream.close();
                         if (names.size() == 0) return "found no files";
                         publishProgress(null, "Downloading 0/" + ids.size() + " files");
+                        OutputStream fileOutputStream;
                         for (i = 0; i < ids.size(); i++) {
                             name = names.get(i);
                             Log.e(TAG, name + ": " + ids.get(i));
                             for (; ; ) {
                                 try {
                                     connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
-                                    connection.addRequestProperty("Authorization", "Bearer " + token);
+                                    connection.addRequestProperty("Authorization", token);
                                     if (connection.getResponseCode() == 200) {
                                         stream = connection.getInputStream();
-                                        baos = new ByteArrayOutputStream();
+                                        //baos = new ByteArrayOutputStream();
+                                        fileOutputStream  = new FileOutputStream(new File(appDirectory, name));
                                         while ((c = stream.read(buffer)) != -1) {
-                                            baos.write(buffer, 0, c);
+                                            //baos.write(buffer, 0, c);
+                                            fileOutputStream.write(buffer, 0, c);
                                         }
-                                        Log.e(TAG, baos.toString());
-                                        baos.close();
+                                        //Log.e(TAG, baos.toString());
+                                        //baos.close();
+                                        fileOutputStream.close();
                                         stream.close();
                                         publishProgress(null, "Downloading " + (i + 1) + "/" + ids.size() + " files");
                                         incompleteFiles.remove(name);
-                                        if (i == 0 && (incompleteFilesJson == null || name.compareTo(incompleteFiles.get(incompleteFiles.size() - 1)) >= 0))
+                                        if (i == 0 && (incompleteFiles.size() == 0 || name.compareTo(incompleteFiles.get(incompleteFiles.size() - 1)) >= 0))
                                             incompleteFiles.add(name);
                                         break;
                                     } else {
@@ -324,5 +331,4 @@ public class MainActivity extends AppCompatActivity {
         ActivityCompat.requestPermissions(this,
                 new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},0);}
     fot = new FileOutputStream(new File(Environment.getExternalStorageDirectory(), "raw.txt"));
-    tof = new FileOutputStream(new File(Environment.getExternalStorageDirectory(), "kalman.txt"));
     rawtxt = new BufferedReader(new FileReader(new File(Environment.getExternalStorageDirectory(),"raw.txt")));*/
