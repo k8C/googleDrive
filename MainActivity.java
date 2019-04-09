@@ -20,20 +20,39 @@ import android.widget.TimePicker;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import com.jjoe64.graphview.DefaultLabelFormatter;
+import com.jjoe64.graphview.GraphView;
+import com.jjoe64.graphview.GridLabelRenderer;
+import com.jjoe64.graphview.LabelFormatter;
+import com.jjoe64.graphview.Viewport;
+import com.jjoe64.graphview.helper.DateAsXAxisLabelFormatter;
+import com.jjoe64.graphview.helper.StaticLabelsFormatter;
+import com.jjoe64.graphview.series.DataPoint;
+import com.jjoe64.graphview.series.LineGraphSeries;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.URL;
-import java.net.URLConnection;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.Random;
 
 import javax.net.ssl.HttpsURLConnection;
 
@@ -44,6 +63,8 @@ public class MainActivity extends AppCompatActivity {
     static final String TAG = "drive";
     TextView statusText, fromText, toText;
     Calendar startTime, endTime;
+    GraphView graph;
+    LineGraphSeries<DataPoint> condSeries, phSeries, tempSeries;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -94,11 +115,43 @@ public class MainActivity extends AppCompatActivity {
                 }, endTime.get(Calendar.YEAR), endTime.get(Calendar.MONTH), endTime.get(Calendar.DATE)).show();
             }
         });
-        String s = String.format("%1$tY/%<tm/%<td %<tR", startTime);
-        fromText.setText(s);
-        toText.setText(s);
-        //DataProcessingTask.ac = getApplicationContext();
-        //statusText.setTag(PreferenceManager.getDefaultSharedPreferences(this).getString("token", null));
+        fromText.setText(String.format("%1$tY/%<tm/%<td %<tR", startTime));
+        toText.setText(fromText.getText());
+        graph = findViewById(R.id.graph);
+        graph.getViewport().setScalable(true);
+
+        condSeries = new LineGraphSeries<>();
+        phSeries = new LineGraphSeries<>();
+        tempSeries = new LineGraphSeries<>();
+        condSeries.setDrawDataPoints(true);
+        condSeries.setColor(0xff33b5e5);
+        phSeries.setDrawDataPoints(true);
+        phSeries.setColor(0xffaa66cc);
+        tempSeries.setDrawDataPoints(true);
+        tempSeries.setColor(0xffffbb33);
+//        graph.getGridLabelRenderer().setGridStyle(GridLabelRenderer.GridStyle.NONE);
+        graph.addSeries(condSeries);
+        graph.addSeries(phSeries);
+        graph.addSeries(tempSeries);
+        graph.getViewport().setXAxisBoundsManual(true);
+        graph.getGridLabelRenderer().setLabelFormatter(new LabelFormatter() {
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd\nHH:mm:ss");
+
+            @Override
+            public String formatLabel(double value, boolean isValueX) {
+                if (isValueX) {
+                    Log.e(TAG, "formatLabel" + value);
+                    return dateFormat.format(new Date((long) value));
+                }
+                return "" + value;
+            }
+
+            @Override
+            public void setViewport(Viewport viewport) {
+
+            }
+        });
+//        graph.getGridLabelRenderer().setHumanRounding(false);
     }
 
     public void executeTask(View button) {
@@ -107,20 +160,24 @@ public class MainActivity extends AppCompatActivity {
             statusText.setText("Start Time must not be later than End Time");
             return;
         }
-//        HttpsURLConnection u;
-//        u.getInputStream().;
-        new DataProcessingTask(statusText, getApplicationContext()).execute(startTime.clone(), endTime.clone());
+        new DataProcessingTask(statusText, getApplicationContext(), condSeries, phSeries, tempSeries, graph).execute(startTime.clone(), endTime.clone());
     }
 
     static class DataProcessingTask extends AsyncTask<Object, String, String> {
-        String token;
+        String token, appDirectory;
         Context appContext;
         WeakReference<TextView> statusTextReference;
+        LineGraphSeries<DataPoint> condSeries, phSeries, tempSeries;
+        GraphView graph;
 
-        public DataProcessingTask(TextView statusText, Context applicationContext) {
+        public DataProcessingTask(TextView statusText, Context applicationContext, LineGraphSeries condSeries, LineGraphSeries phSeries, LineGraphSeries tempSeries, GraphView graph) {
             statusTextReference = new WeakReference<TextView>(statusText);
             appContext = applicationContext;
             token = (String) statusText.getTag();
+            this.condSeries = condSeries;
+            this.phSeries = phSeries;
+            this.tempSeries = tempSeries;
+            this.graph = graph;
         }
 
         void getToken(HttpsURLConnection connection, InputStream stream) {
@@ -142,9 +199,7 @@ public class MainActivity extends AppCompatActivity {
                             if (c == 107 && stream.read() == 101 && stream.read() == 110 && stream.read() == 34 && stream.read() == 58) {
                                 stream.read();
                                 stream.read();
-                                while ((c = stream.read()) != 34) {
-                                    s.append((char) c);
-                                }
+                                while ((c = stream.read()) != 34) s.append((char) c);
                                 break;
                             }
                         }
@@ -169,28 +224,25 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         protected String doInBackground(Object... params) {
-            if (token == null) getToken(null, null);
             StringBuilder s = new StringBuilder("https://www.googleapis.com/drive/v3/files?fields=files(id,name)&q=");
             Calendar startTime = (Calendar) params[0];
             int i = 0;
-            String name;//, lastIncompleteFileName = incompleteFiles.get(incompleteFiles.size()-1);
-            String appDirectory = appContext.getExternalFilesDir(null).getPath();
+            condData = new ArrayList<>();
+            phData = new ArrayList<>();
+            tempData = new ArrayList<>();
+            String name;
+            appDirectory = appContext.getExternalFilesDir(null).getPath();
             List<String> incompleteFiles;
             String incompleteFilesJson = PreferenceManager.getDefaultSharedPreferences(appContext).getString("incompleteFiles", null);
-            if (incompleteFilesJson != null) {
+            if (incompleteFilesJson != null)
                 incompleteFiles = new Gson().fromJson(incompleteFilesJson, new TypeToken<List<String>>() {
                 }.getType());
-            } else {
-                incompleteFiles = new ArrayList<>();
-            }
+            else incompleteFiles = new ArrayList<>();
             while (!startTime.after(params[1])) {
                 name = String.format("%1$tY%<tm%<td%<tH%<tM", startTime);
                 if (!new File(appDirectory, name).exists() || incompleteFiles.contains(name)) {
-                    if (i++ == 0) {
-                        s.append("name%3D%27");
-                    } else {
-                        s.append("%27orname%3D%27");
-                    }
+                    if (i++ == 0) s.append("name%3D%27");
+                    else s.append("%27orname%3D%27");
                     s.append(name);
                 } else {
                     publishProgress(name, null);
@@ -203,14 +255,13 @@ public class MainActivity extends AppCompatActivity {
             InputStream stream;
             HttpsURLConnection connection;
             int c;
-            ByteArrayOutputStream baos;
-            byte[] buffer = new byte[1024];
             List<String> ids = new ArrayList<>();
             List<String> names = new ArrayList<>();
             boolean isId = true;
             String searchUrl = s.toString();
 
             publishProgress(null, "searching for files");
+            if (token == null) getToken(null, null);
             for (; ; ) {
                 try {
                     connection = (HttpsURLConnection) new URL(searchUrl).openConnection();
@@ -220,9 +271,7 @@ public class MainActivity extends AppCompatActivity {
                         while ((c = stream.read()) != -1) {
                             if (c == 58 && stream.read() == 32 && stream.read() == 34) {
                                 s = new StringBuilder();
-                                while ((c = stream.read()) != 34) {
-                                    s.append((char) c);
-                                }
+                                while ((c = stream.read()) != 34) s.append((char) c);
                                 if (isId) {
                                     isId = false;
                                     ids.add(s.toString());
@@ -234,6 +283,7 @@ public class MainActivity extends AppCompatActivity {
                         }
                         stream.close();
                         if (names.size() == 0) return "found no files";
+                        byte[] buffer = new byte[1024];
                         publishProgress(null, "Downloading 0/" + ids.size() + " files");
                         OutputStream fileOutputStream;
                         for (i = 0; i < ids.size(); i++) {
@@ -245,16 +295,12 @@ public class MainActivity extends AppCompatActivity {
                                     connection.addRequestProperty("Authorization", token);
                                     if (connection.getResponseCode() == 200) {
                                         stream = connection.getInputStream();
-                                        //baos = new ByteArrayOutputStream();
-                                        fileOutputStream  = new FileOutputStream(new File(appDirectory, name));
-                                        while ((c = stream.read(buffer)) != -1) {
-                                            //baos.write(buffer, 0, c);
+                                        fileOutputStream = new FileOutputStream(new File(appDirectory, name));
+                                        while ((c = stream.read(buffer)) != -1)
                                             fileOutputStream.write(buffer, 0, c);
-                                        }
-                                        //Log.e(TAG, baos.toString());
-                                        //baos.close();
                                         fileOutputStream.close();
                                         stream.close();
+                                        publishProgress(name, null);
                                         publishProgress(null, "Downloading " + (i + 1) + "/" + ids.size() + " files");
                                         incompleteFiles.remove(name);
                                         if (i == 0 && (incompleteFiles.size() == 0 || name.compareTo(incompleteFiles.get(incompleteFiles.size() - 1)) >= 0))
@@ -276,9 +322,7 @@ public class MainActivity extends AppCompatActivity {
                     } else {
                         stream = connection.getErrorStream();
                         s = new StringBuilder();
-                        while ((c = stream.read()) != -1) {
-                            s.append((char) c);
-                        }
+                        while ((c = stream.read()) != -1) s.append((char) c);
                         Log.e(TAG, "error stream: " + s.toString());
                         stream.close();
                         publishProgress(null, "searching files failed, reacquiring token");
@@ -293,8 +337,10 @@ public class MainActivity extends AppCompatActivity {
             }
 
             //if (isCancelled()) return "";
-            return searchUrl;
+            return null;
         }
+
+        List<DataPoint> condData, phData, tempData;
 
         @Override
         protected void onProgressUpdate(String... values) {
@@ -304,19 +350,55 @@ public class MainActivity extends AppCompatActivity {
                     statusText.setText(values[1]);
                 } else {
                     Log.e(TAG, "file " + values[0] + " exists");
+                    try {
+                        BufferedReader bufferedReader = new BufferedReader(new FileReader(new File(appDirectory, values[0])));
+                        String line;
+                        String[] tokens;
+                        double time;
+                        bufferedReader.read();
+                        while ((line = bufferedReader.readLine()) != null) {
+                            tokens = line.split(",");
+                            time = Double.parseDouble(tokens[0] + "000");
+                            condData.add(new DataPoint(time, Double.parseDouble(tokens[1])));
+                            phData.add(new DataPoint(time, Double.parseDouble(tokens[2])));
+                            tempData.add(new DataPoint(time, Double.parseDouble(tokens[3])));
+                        }
+
+                    } catch (IOException e) {
+                        Log.e(TAG, "file read error");
+                        e.printStackTrace();
+                    }
+
                 }
             }
         }
 
         @Override
         protected void onPostExecute(String s) {
-            //PreferenceManager.getDefaultSharedPreferences(ac).edit().apply();
             TextView statusText = statusTextReference.get();
-            if (statusText != null) {
-                Log.e(TAG, s);
-                statusText.setText("done");
-                statusText.setTag(token);
-            }
+            statusText.setText("done");
+            statusText.setTag(token);
+            if (s == null) {
+                Comparator<DataPoint> comparator = new Comparator<DataPoint>() {
+                    @Override
+                    public int compare(DataPoint o1, DataPoint o2) {
+                        return o1.getX() < o2.getX() ? -1 : 1;
+                    }
+                };
+                Collections.sort(condData, comparator);
+                Collections.sort(phData, comparator);
+                Collections.sort(tempData, comparator);
+//                graph.removeAllSeries();
+                graph.getViewport().setMaxX(condData.get(condData.size()-1).getX());
+                graph.getViewport().setMinX(condData.get(0).getX());
+//                graph.addSeries(new LineGraphSeries(condData.toArray(new DataPoint[condData.size()])));
+//                graph.addSeries(new LineGraphSeries(phData.toArray(new DataPoint[phData.size()])));
+//                graph.addSeries(new LineGraphSeries(tempData.toArray(new DataPoint[tempData.size()])));
+
+                condSeries.resetData(condData.toArray(new DataPoint[condData.size()]));
+                phSeries.resetData(phData.toArray(new DataPoint[phData.size()]));
+                tempSeries.resetData(tempData.toArray(new DataPoint[tempData.size()]));
+            } else Log.e(TAG, s);
         }
 
     }
