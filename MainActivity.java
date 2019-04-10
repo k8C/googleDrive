@@ -14,9 +14,11 @@ import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.view.View;
+import android.widget.Button;
 import android.widget.DatePicker;
 import android.widget.TextView;
 import android.widget.TimePicker;
+import android.widget.Toast;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -65,6 +67,7 @@ public class MainActivity extends AppCompatActivity {
     Calendar startTime, endTime;
     GraphView graph;
     LineGraphSeries<DataPoint> condSeries, phSeries, tempSeries;
+    DataProcessingTask dataProcessingTask;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -154,38 +157,45 @@ public class MainActivity extends AppCompatActivity {
 //        graph.getGridLabelRenderer().setHumanRounding(false);
     }
 
-    public void executeTask(View button) {
-        statusText.setText(null);
-        if (startTime.after(endTime)) {
-            statusText.setText("Start Time must not be later than End Time");
-            return;
-        }
-        new DataProcessingTask(statusText, getApplicationContext(), condSeries, phSeries, tempSeries, graph).execute(startTime.clone(), endTime.clone());
+    public void executeTask(View v) {
+        Button button = (Button) v;
+        if (button.getText().equals("check")) {
+            if (startTime.after(endTime)) {
+                statusText.setText("Start Time must not be later than End Time");
+                return;
+            }
+            dataProcessingTask = new DataProcessingTask(statusText, button);
+            dataProcessingTask.appContext = getApplicationContext();
+            dataProcessingTask.graph = graph;
+            dataProcessingTask.condSeries = condSeries;
+            dataProcessingTask.phSeries = phSeries;
+            dataProcessingTask.tempSeries = tempSeries;
+            button.setText("cancel");
+            dataProcessingTask.execute(startTime.clone(), endTime.clone());
+        } else dataProcessingTask.cancel(true);
     }
 
-    static class DataProcessingTask extends AsyncTask<Object, String, String> {
+    static class DataProcessingTask extends AsyncTask<Object, String, Void> {
         String token, appDirectory;
         Context appContext;
         WeakReference<TextView> statusTextReference;
+        WeakReference<Button> buttonReference;
         LineGraphSeries<DataPoint> condSeries, phSeries, tempSeries;
         GraphView graph;
 
-        public DataProcessingTask(TextView statusText, Context applicationContext, LineGraphSeries condSeries, LineGraphSeries phSeries, LineGraphSeries tempSeries, GraphView graph) {
+        public DataProcessingTask(TextView statusText, Button button) {
             statusTextReference = new WeakReference<TextView>(statusText);
-            appContext = applicationContext;
+            buttonReference = new WeakReference<Button>(button);
             token = (String) statusText.getTag();
-            this.condSeries = condSeries;
-            this.phSeries = phSeries;
-            this.tempSeries = tempSeries;
-            this.graph = graph;
         }
 
         void getToken(HttpsURLConnection connection, InputStream stream) {
-            publishProgress(null, "getting token");
+            publishProgress(null, "getting token...");
             int c;
             StringBuilder s;
             byte[] tokenRequestBody = "client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8&grant_type=refresh_token".getBytes();
             for (; ; ) {
+                if (isCancelled()) return;
                 try {
                     connection = (HttpsURLConnection) new URL("https://www.googleapis.com/oauth2/v4/token").openConnection();
                     connection.setDoOutput(true);
@@ -209,21 +219,21 @@ public class MainActivity extends AppCompatActivity {
                         publishProgress(null, "token refreshed");
                     } else {
                         Log.e(TAG, "refreshToken fail");
-                        publishProgress(null, "refreshToken failed, exit");
+                        Toast.makeText(appContext, "Failed to get Token", Toast.LENGTH_SHORT).show();
                         cancel(true);
                     }
                     return;
                 } catch (IOException e) {
                     Log.e(TAG, "refreshToken exception");
                     e.printStackTrace();
-                    publishProgress(null, "refreshToken error, retrying");
+                    publishProgress(null, "getting token error, retrying...");
                     SystemClock.sleep(5000);
                 }
             }
         }
 
         @Override
-        protected String doInBackground(Object... params) {
+        protected Void doInBackground(Object... params) {
             StringBuilder s = new StringBuilder("https://www.googleapis.com/drive/v3/files?fields=files(id,name)&q=");
             Calendar startTime = (Calendar) params[0];
             int i = 0;
@@ -244,12 +254,13 @@ public class MainActivity extends AppCompatActivity {
                     if (i++ == 0) s.append("name%3D%27");
                     else s.append("%27orname%3D%27");
                     s.append(name);
-                } else {
-                    publishProgress(name, null);
-                }
+                } else publishProgress(name, null);
                 startTime.add(Calendar.MINUTE, 1);
             }
-            if (i == 0) return "all files exist";
+            if (i == 0) {
+                Log.e(TAG, "all files exist");
+                return null;
+            }
             s.append("%27");
 
             InputStream stream;
@@ -260,9 +271,10 @@ public class MainActivity extends AppCompatActivity {
             boolean isId = true;
             String searchUrl = s.toString();
 
-            publishProgress(null, "searching for files");
             if (token == null) getToken(null, null);
+            publishProgress(null, "searching for files...");
             for (; ; ) {
+                if (isCancelled()) return null;
                 try {
                     connection = (HttpsURLConnection) new URL(searchUrl).openConnection();
                     connection.addRequestProperty("Authorization", token);
@@ -282,7 +294,10 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                         stream.close();
-                        if (names.size() == 0) return "found no files";
+                        if (names.size() == 0) {
+                            Log.e(TAG, "found nothing");
+                            return null;
+                        }
                         byte[] buffer = new byte[1024];
                         publishProgress(null, "Downloading 0/" + ids.size() + " files");
                         OutputStream fileOutputStream;
@@ -290,6 +305,7 @@ public class MainActivity extends AppCompatActivity {
                             name = names.get(i);
                             Log.e(TAG, name + ": " + ids.get(i));
                             for (; ; ) {
+                                if (isCancelled()) return null;
                                 try {
                                     connection = (HttpsURLConnection) new URL("https://www.googleapis.com/drive/v3/files/" + ids.get(i) + "/export?mimeType=text/plain").openConnection();
                                     connection.addRequestProperty("Authorization", token);
@@ -335,26 +351,23 @@ public class MainActivity extends AppCompatActivity {
                     SystemClock.sleep(5000);
                 }
             }
-
-            //if (isCancelled()) return "";
             return null;
         }
 
         List<DataPoint> condData, phData, tempData;
+        BufferedReader bufferedReader;
+        String line;
+        String[] tokens;
+        double time;
 
         @Override
         protected void onProgressUpdate(String... values) {
             if (!isCancelled()) {
-                TextView statusText = statusTextReference.get();
-                if (values[0] == null) {
-                    statusText.setText(values[1]);
-                } else {
-                    Log.e(TAG, "file " + values[0] + " exists");
+                if (values[0] == null) statusTextReference.get().setText(values[1]);
+                else {
+                    Log.e(TAG, "file " + values[0] + " done");
                     try {
-                        BufferedReader bufferedReader = new BufferedReader(new FileReader(new File(appDirectory, values[0])));
-                        String line;
-                        String[] tokens;
-                        double time;
+                        bufferedReader = new BufferedReader(new FileReader(new File(appDirectory, values[0])));
                         bufferedReader.read();
                         while ((line = bufferedReader.readLine()) != null) {
                             tokens = line.split(",");
@@ -363,22 +376,22 @@ public class MainActivity extends AppCompatActivity {
                             phData.add(new DataPoint(time, Double.parseDouble(tokens[2])));
                             tempData.add(new DataPoint(time, Double.parseDouble(tokens[3])));
                         }
-
+                        bufferedReader.close();
                     } catch (IOException e) {
                         Log.e(TAG, "file read error");
                         e.printStackTrace();
                     }
-
                 }
             }
         }
 
         @Override
-        protected void onPostExecute(String s) {
+        protected void onPostExecute(Void s) {
             TextView statusText = statusTextReference.get();
-            statusText.setText("done");
             statusText.setTag(token);
-            if (s == null) {
+            if (condData.isEmpty()) statusText.setText("found no files");
+            else {
+                statusText.setText(null);
                 Comparator<DataPoint> comparator = new Comparator<DataPoint>() {
                     @Override
                     public int compare(DataPoint o1, DataPoint o2) {
@@ -388,19 +401,29 @@ public class MainActivity extends AppCompatActivity {
                 Collections.sort(condData, comparator);
                 Collections.sort(phData, comparator);
                 Collections.sort(tempData, comparator);
-//                graph.removeAllSeries();
-                graph.getViewport().setMaxX(condData.get(condData.size()-1).getX());
+                graph.getViewport().setMaxX(condData.get(condData.size() - 1).getX());
                 graph.getViewport().setMinX(condData.get(0).getX());
-//                graph.addSeries(new LineGraphSeries(condData.toArray(new DataPoint[condData.size()])));
-//                graph.addSeries(new LineGraphSeries(phData.toArray(new DataPoint[phData.size()])));
-//                graph.addSeries(new LineGraphSeries(tempData.toArray(new DataPoint[tempData.size()])));
-
                 condSeries.resetData(condData.toArray(new DataPoint[condData.size()]));
                 phSeries.resetData(phData.toArray(new DataPoint[phData.size()]));
                 tempSeries.resetData(tempData.toArray(new DataPoint[tempData.size()]));
-            } else Log.e(TAG, s);
+            }
+            buttonReference.get().setText("check");
         }
 
+        @Override
+        protected void onCancelled(Void s) {
+            Button button = buttonReference.get();
+            if (button != null) {
+                button.setText("check");
+                statusTextReference.get().setText(null);
+            }
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (dataProcessingTask != null) dataProcessingTask.cancel(true);
+        super.onDestroy();
     }
 }
 //https://accounts.google.com/o/oauth2/v2/auth?scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file&response_type=code&redirect_uri=urn:ietf:wg:oauth:2.0:oob&client_id=463875113005-1att4hu76j0ac7ta17mdjniinfgg2di2.apps.googleusercontent.com
@@ -409,8 +432,3 @@ public class MainActivity extends AppCompatActivity {
 //client_id=463875113005-icovngqrabn2hass5tug5ik5m436ks2k.apps.googleusercontent.com&client_secret=8PWn96NTst2-rbkaXToWoi6F&refresh_token=1/7C-dMwDk771wT5lads8os4_mziPZspcIU6ndw_ZJpi4&grant_type=refresh_token
 //4/FwG9vGUJa37B48T-SRWo4_PxxBxJNg_vbWul86O7ICEQHqEgg36SjGYnl84Ls2VQBsw5-hYzbFlMDhtYjKaFlFs
 //1/VRNPHjn46h-4vuR8Emw754daGgEx9VmCFWFWronfIO8
-    /*if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-        ActivityCompat.requestPermissions(this,
-                new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},0);}
-    fot = new FileOutputStream(new File(Environment.getExternalStorageDirectory(), "raw.txt"));
-    rawtxt = new BufferedReader(new FileReader(new File(Environment.getExternalStorageDirectory(),"raw.txt")));*/
